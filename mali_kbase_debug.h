@@ -135,6 +135,13 @@ struct kbasep_debug_assert_cb {
 
 /** @} */
 
+/* Spreadtrum platform logging, filtered by the mali_debug_level module parameter */
+extern int mali_debug_level;
+#define KBASE_DEBUG_PRINT(level, fmt, ...) \
+	if ((level) <= mali_debug_level) { \
+		printk("MALI " pr_fmt(fmt), ##__VA_ARGS__); \
+	}
+
 /**
  * @brief Register a function to call on ASSERT
  *

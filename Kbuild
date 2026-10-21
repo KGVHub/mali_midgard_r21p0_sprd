@@ -33,7 +33,9 @@ MALI_KERNEL_TEST_API ?= 0
 MALI_ERROR_INJECT_ON ?= 0
 MALI_MOCK_TEST ?= 0
 MALI_COVERAGE ?= 0
-CONFIG_MALI_PLATFORM_NAME ?= "devicetree"
+# Spreadtrum SC7731E; the stock module is called mali.ko
+CONFIG_MALI_MIDGARD ?= m
+CONFIG_MALI_PLATFORM_NAME ?= "pike2"
 # This workaround is for what seems to be a compiler bug we observed in
 # GCC 4.7 on AOSP 4.3.  The bug caused an intermittent failure compiling
 # the "_Pragma" syntax, where an error message is returned:
@@ -128,10 +130,10 @@ endif
 ccflags-y += -I$(KBASE_PATH)
 
 # Tell the Linux build system from which .o file to create the kernel module
-obj-$(CONFIG_MALI_MIDGARD) += mali_kbase.o
+obj-$(CONFIG_MALI_MIDGARD) += mali.o
 
 # Tell the Linux build system to enable building of our .c files
-mali_kbase-y := $(SRC:.c=.o)
+mali-y := $(SRC:.c=.o)
 
 # Kconfig passes in the name with quotes for in-tree builds - remove them.
 platform_name := $(shell echo $(CONFIG_MALI_PLATFORM_NAME))
@@ -145,24 +147,24 @@ ifeq ($(CONFIG_MALI_DEVFREQ),y)
   endif
 endif
 
-mali_kbase-$(CONFIG_MALI_DMA_FENCE) += \
+mali-$(CONFIG_MALI_DMA_FENCE) += \
 	mali_kbase_dma_fence.o \
 	mali_kbase_fence.o
-mali_kbase-$(CONFIG_SYNC) += \
+mali-$(CONFIG_SYNC) += \
 	mali_kbase_sync_android.o \
 	mali_kbase_sync_common.o
-mali_kbase-$(CONFIG_SYNC_FILE) += \
+mali-$(CONFIG_SYNC_FILE) += \
 	mali_kbase_sync_file.o \
 	mali_kbase_sync_common.o \
 	mali_kbase_fence.o
 
 ifeq ($(MALI_MOCK_TEST),1)
 # Test functionality
-mali_kbase-y += tests/internal/src/mock/mali_kbase_pm_driver_mock.o
+mali-y += tests/internal/src/mock/mali_kbase_pm_driver_mock.o
 endif
 
 include  $(src)/backend/gpu/Kbuild
-mali_kbase-y += $(BACKEND:.c=.o)
+mali-y += $(BACKEND:.c=.o)
 
 
 ccflags-y += -I$(src)/backend/gpu

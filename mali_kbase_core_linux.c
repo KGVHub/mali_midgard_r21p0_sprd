@@ -95,6 +95,47 @@ static LIST_HEAD(kbase_dev_list);
 
 #define KERNEL_SIDE_DDK_VERSION_STRING "K:" MALI_RELEASE_NAME "(GPL)"
 
+/*
+ * Spreadtrum GPU tuning parameters, the same set the stock SC7731E (pike2)
+ * mali.ko exposes in /sys/module/mali/parameters. The pike2 platform code
+ * reads and updates them.
+ */
+int mali_debug_level = 2;
+module_param(mali_debug_level, int, S_IRUSR | S_IWUSR | S_IWGRP | S_IRGRP | S_IROTH); /* rw-rw-r-- */
+MODULE_PARM_DESC(mali_debug_level, "Higher number, more dmesg output");
+
+int gpu_upthreshold = 80;
+module_param(gpu_upthreshold, int, S_IRUSR | S_IWUSR | S_IWGRP | S_IRGRP | S_IROTH); /* rw-rw-r-- */
+MODULE_PARM_DESC(gpu_upthreshold, "GPU gpu_upthreshold");
+
+int gpu_downdifferential = 10;
+module_param(gpu_downdifferential, int, S_IRUSR | S_IWUSR | S_IWGRP | S_IRGRP | S_IROTH); /* rw-rw-r-- */
+MODULE_PARM_DESC(gpu_downdifferential, "GPU gpu_downdifferential");
+
+int gpu_pollingtime = 50;
+module_param(gpu_pollingtime, int, S_IRUSR | S_IWUSR | S_IWGRP | S_IRGRP | S_IROTH); /* rw-rw-r-- */
+MODULE_PARM_DESC(gpu_pollingtime, "GPU gpu_pollingtime");
+
+int gpu_freq_cur = 0;
+module_param(gpu_freq_cur, int, S_IRUSR | S_IRGRP | S_IROTH); /* r-r-r-- */
+MODULE_PARM_DESC(gpu_freq_cur, "GPU gpu_freq_cur");
+
+int gpu_voltage_cur = 0;
+module_param(gpu_voltage_cur, int, S_IRUSR | S_IRGRP | S_IROTH); /* r-r-r-- */
+MODULE_PARM_DESC(gpu_voltage_cur, "GPU gpu_voltage_cur");
+
+char *gpu_freq_list = NULL;
+module_param(gpu_freq_list, charp, S_IRUSR | S_IRGRP | S_IROTH); /* r-r-r-- */
+MODULE_PARM_DESC(gpu_freq_list, "GPU freq_list");
+
+int gpu_boost_level = 0;
+module_param(gpu_boost_level, int, S_IRUSR | S_IRGRP | S_IROTH); /* r-r-r-- */
+MODULE_PARM_DESC(gpu_boost_level, "GPU gpu_boost_level");
+
+int gpu_power_alawys_on = 0;	/* sic: name kept from the stock driver */
+module_param(gpu_power_alawys_on, int, S_IRUSR | S_IWUSR | S_IWGRP | S_IRGRP | S_IROTH); /* rw-rw-r-- */
+MODULE_PARM_DESC(gpu_power_alawys_on, "GPU power always on");
+
 static int kbase_api_handshake(struct kbase_context *kctx,
 		struct kbase_ioctl_version_check *version)
 {
@@ -4062,6 +4103,7 @@ static const struct dev_pm_ops kbase_pm_ops = {
 static const struct of_device_id kbase_dt_ids[] = {
 	{ .compatible = "arm,malit6xx" },
 	{ .compatible = "arm,mali-midgard" },
+	{ .compatible = "sprd,mali-midgard" },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, kbase_dt_ids);
