@@ -45,6 +45,13 @@
 #define VENDOR_FTRACE_MODULE_NAME    "unisoc-gpu"
 
 #define DTS_CLK_OFFSET      2
+
+/* pike2 registers, as programmed by the stock SC7731E mali.ko */
+#define REG_PMU_APB_PD_GPU_TOP_CFG		0x0020
+#define BIT_PMU_APB_PD_GPU_TOP_FORCE_SHUTDOWN	BIT(25)
+#define BIT_PMU_APB_PD_GPU_TOP_AUTO_SHUTDOWN_EN	BIT(24)
+#define REG_AON_APB_GPU_TARGET_VOLT		0x3098
+#define REG_AON_APB_CPU_TARGET_VOLT		0x309c
 #define PM_RUNTIME_DELAY_MS 50
 #define UP_THRESHOLD        9/10
 
@@ -92,10 +99,13 @@ struct gpu_dfs_context {
 	struct workqueue_struct *gpu_dfs_workqueue;
 	struct semaphore* sem;
 
-	struct gpu_reg_info top_reg;
+	void __iomem *top_force_shutdown;
+	struct regmap *gpu_ahb_reg;
 	struct gpu_reg_info gpu_target_reg;
 	struct gpu_reg_info cpu_target_reg;
 };
+
+static DEFINE_SPINLOCK(gpu_top_lock);
 
 #ifndef CONFIG_OF
 static struct kbase_io_resources io_resources = {
@@ -129,9 +139,9 @@ extern int gpu_freq_max_limit;
 #endif
 extern char* gpu_freq_list;
 
-extern struct regulator *sprd_get_cpu_gpu_regulator(void);
-extern void sprd_cpu_gpu_volt_lock(void);
-extern void sprd_cpu_gpu_volt_unlock(void);
+extern struct regulator *get_cpu_gpu_regulator(void);
+extern void down_voltage_sem(void);
+extern void up_voltage_sem(void);
 
 #if defined(CONFIG_MALI_MIDGARD_DVFS) || defined(CONFIG_MALI_DEVFREQ)
 static void set_gpu_target_voltage(u32 target_voltage);
@@ -152,18 +162,25 @@ static inline void mali_freq_init(struct device *dev)
 {
 #ifdef CONFIG_OF
 	int i = 0, clk_cnt = 0;
+	struct device_node *pmu_np;
+	struct regmap *aon_apb;
 
-	gpu_dfs_ctx.top_reg.regmap_ptr = syscon_regmap_lookup_by_name(dev->of_node,"top_force_shutdown");
-	KBASE_DEBUG_ASSERT(gpu_dfs_ctx.top_reg.regmap_ptr);
-	syscon_get_args_by_name(dev->of_node,"top_force_shutdown", 2, (uint32_t *)gpu_dfs_ctx.top_reg.args);
+	pmu_np = of_find_compatible_node(NULL, NULL, "sprd,sys-pmu-apb");
+	KBASE_DEBUG_ASSERT(pmu_np);
+	gpu_dfs_ctx.top_force_shutdown = ioremap(of_translate_address(pmu_np,
+			of_get_property(pmu_np, "reg", NULL)) + REG_PMU_APB_PD_GPU_TOP_CFG, 4);
+	of_node_put(pmu_np);
+	KBASE_DEBUG_ASSERT(gpu_dfs_ctx.top_force_shutdown);
 
-	gpu_dfs_ctx.gpu_target_reg.regmap_ptr = syscon_regmap_lookup_by_name(dev->of_node,"gpu_target_volt");
-	KBASE_DEBUG_ASSERT(gpu_dfs_ctx.gpu_target_reg.regmap_ptr);
-	syscon_get_args_by_name(dev->of_node,"gpu_target_volt", 2, (uint32_t *)gpu_dfs_ctx.gpu_target_reg.args);
+	aon_apb = syscon_regmap_lookup_by_phandle(dev->of_node, "sprd,syscon-aon-apb");
+	KBASE_DEBUG_ASSERT(!IS_ERR(aon_apb));
+	gpu_dfs_ctx.gpu_target_reg.regmap_ptr = aon_apb;
+	gpu_dfs_ctx.gpu_target_reg.args[0] = REG_AON_APB_GPU_TARGET_VOLT;
+	gpu_dfs_ctx.cpu_target_reg.regmap_ptr = aon_apb;
+	gpu_dfs_ctx.cpu_target_reg.args[0] = REG_AON_APB_CPU_TARGET_VOLT;
 
-	gpu_dfs_ctx.cpu_target_reg.regmap_ptr = syscon_regmap_lookup_by_name(dev->of_node,"cpu_target_volt");
-	KBASE_DEBUG_ASSERT(gpu_dfs_ctx.cpu_target_reg.regmap_ptr);
-	syscon_get_args_by_name(dev->of_node,"cpu_target_volt", 2, (uint32_t *)gpu_dfs_ctx.cpu_target_reg.args);
+	gpu_dfs_ctx.gpu_ahb_reg = syscon_regmap_lookup_by_phandle(dev->of_node, "sprd,syscon-gpu-ahb");
+	KBASE_DEBUG_ASSERT(!IS_ERR(gpu_dfs_ctx.gpu_ahb_reg));
 
 	gpu_dfs_ctx.gpu_clock_i = of_clk_get(dev->of_node, 0);
 	gpu_dfs_ctx.gpu_clock = of_clk_get(dev->of_node, 1);
@@ -236,7 +253,13 @@ static inline void mali_freq_init(struct device *dev)
 
 static inline void mali_power_on(void)
 {
-	regmap_update_bits(gpu_dfs_ctx.top_reg.regmap_ptr, gpu_dfs_ctx.top_reg.args[0], gpu_dfs_ctx.top_reg.args[1], ~gpu_dfs_ctx.top_reg.args[1]);
+	u32 val;
+
+	spin_lock(&gpu_top_lock);
+	val = readl(gpu_dfs_ctx.top_force_shutdown);
+	val &= ~(BIT_PMU_APB_PD_GPU_TOP_FORCE_SHUTDOWN | BIT_PMU_APB_PD_GPU_TOP_AUTO_SHUTDOWN_EN);
+	writel(val, gpu_dfs_ctx.top_force_shutdown);
+	spin_unlock(&gpu_top_lock);
 
 	udelay(300);
 	gpu_dfs_ctx.gpu_power_on = 1;
@@ -244,9 +267,25 @@ static inline void mali_power_on(void)
 
 static inline void mali_power_off(void)
 {
+	u32 val;
+
 	gpu_dfs_ctx.gpu_power_on = 0;
 
-	regmap_update_bits(gpu_dfs_ctx.top_reg.regmap_ptr, gpu_dfs_ctx.top_reg.args[0], gpu_dfs_ctx.top_reg.args[1], gpu_dfs_ctx.top_reg.args[1]);
+	spin_lock(&gpu_top_lock);
+	val = readl(gpu_dfs_ctx.top_force_shutdown);
+	val &= ~BIT_PMU_APB_PD_GPU_TOP_AUTO_SHUTDOWN_EN;
+	val |= BIT_PMU_APB_PD_GPU_TOP_FORCE_SHUTDOWN;
+	writel(val, gpu_dfs_ctx.top_force_shutdown);
+	spin_unlock(&gpu_top_lock);
+}
+
+/* GPU AHB low-power control setup, done by the stock driver after clock-on */
+static void gpu_open_lpc(void)
+{
+	regmap_hwlock_update_bits(gpu_dfs_ctx.gpu_ahb_reg, 0x10, 0x0011ffff, 0x00110020);
+	regmap_hwlock_update_bits(gpu_dfs_ctx.gpu_ahb_reg, 0x14, 0x0001ffff, 0x00010020);
+	regmap_hwlock_update_bits(gpu_dfs_ctx.gpu_ahb_reg, 0x18, 0x0001ffff, 0x00010020);
+	regmap_hwlock_update_bits(gpu_dfs_ctx.gpu_ahb_reg, 0x1c, 0x0001ffff, 0x00010020);
 }
 
 static inline void mali_clock_on(void)
@@ -271,6 +310,7 @@ static inline void mali_clock_on(void)
 	KBASE_DEBUG_ASSERT(gpu_dfs_ctx.freq_cur);
 	clk_set_rate(gpu_dfs_ctx.freq_cur->clk_src, gpu_dfs_ctx.freq_cur->freq*1000);
 	clk_set_parent(gpu_dfs_ctx.gpu_clock, gpu_dfs_ctx.freq_cur->clk_src);
+	gpu_open_lpc();
 
 	gpu_dfs_ctx.gpu_clock_on = 1;
 
@@ -318,7 +358,7 @@ static int mali_platform_init(struct kbase_device *kbdev)
 
 	//init gpu regulator
 	//gpu_reg = devm_regulator_get(kbdev->dev, "gpu");
-	gpu_reg = sprd_get_cpu_gpu_regulator();
+	gpu_reg = get_cpu_gpu_regulator();
 	KBASE_DEBUG_ASSERT(gpu_reg);
 #if defined(CONFIG_MALI_MIDGARD_DVFS) || defined(CONFIG_MALI_DEVFREQ)
 	set_gpu_target_voltage(gpu_dfs_ctx.freq_cur->volt);
@@ -344,6 +384,7 @@ static void mali_platform_term(struct kbase_device *kbdev)
 	vfree(gpu_freq_list);
 	vfree(gpu_dfs_ctx.freq_list);
 	vfree(gpu_dfs_ctx.gpu_clk_src);
+	iounmap(gpu_dfs_ctx.top_force_shutdown);
 
 	regulator_put(gpu_reg);
 	up(gpu_dfs_ctx.sem);
@@ -524,7 +565,7 @@ static bool upgrade_voltage(void)
 	//get gpu target voltage
 	if (target_voltage > gpu_dfs_ctx.target_voltage)
 	{
-		sprd_cpu_gpu_volt_lock();
+		down_voltage_sem();
 
 		//get cp target voltage
 		cpu_target_voltage = get_cpu_target_voltage();
@@ -546,7 +587,7 @@ static bool upgrade_voltage(void)
 			gpu_dfs_ctx.cur_voltage = (target_voltage > cpu_target_voltage) ? target_voltage : cpu_target_voltage;
 			gpu_voltage_cur = gpu_dfs_ctx.cur_voltage;
 		}
-		sprd_cpu_gpu_volt_unlock();
+		up_voltage_sem();
 	}
 
 	return (result);
@@ -564,7 +605,7 @@ static int downgrade_voltage(void)
 	gpu_target_voltage = gpu_dfs_ctx.target_voltage;
 	if (target_voltage < gpu_target_voltage)
 	{
-		sprd_cpu_gpu_volt_lock();
+		down_voltage_sem();
 
 		//get cp target voltage
 		cpu_target_voltage = get_cpu_target_voltage();
@@ -598,7 +639,7 @@ static int downgrade_voltage(void)
 		gpu_dfs_ctx.cur_voltage = (target_voltage > cpu_target_voltage) ? target_voltage : cpu_target_voltage;
 		gpu_voltage_cur = gpu_dfs_ctx.cur_voltage;
 
-		sprd_cpu_gpu_volt_unlock();
+		up_voltage_sem();
 	}
 
 	return (result);

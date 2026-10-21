@@ -1,0 +1,1 @@
+mali-y += $(MALI_PLATFORM_DIR)/mali_kbase_config_pike2.o
