@@ -23,6 +23,10 @@
 #include <linux/of.h>
 #include <linux/clk.h>
 #include <linux/devfreq.h>
+#ifdef CONFIG_MALI_PLATFORM_PIKE2
+/* the pike2 platform code switches GPU clock parent, rate and voltage */
+#include <mali_kbase_config_platform.h>
+#endif
 #ifdef CONFIG_DEVFREQ_THERMAL
 #include <linux/devfreq_cooling.h>
 #endif
@@ -118,7 +122,13 @@ kbase_devfreq_target(struct device *dev, unsigned long *target_freq, u32 flags)
 	}
 #endif
 
+#ifdef CONFIG_MALI_PLATFORM_PIKE2
+	KBASE_DEBUG_PRINT(3, "Mali kbase_devfreq_target cur_freq %lu -> next_freq %lu\n",
+			kbdev->current_freq, freq);
+	err = kbase_platform_set_freq(freq);
+#else
 	err = clk_set_rate(kbdev->clock, freq);
+#endif
 	if (err) {
 		dev_err(dev, "Failed to set clock %lu (target %lu)\n",
 				freq, *target_freq);
@@ -306,23 +316,44 @@ static int kbase_devfreq_init_core_mask_table(struct kbase_device *kbdev)
 	return 0;
 }
 
+#ifdef CONFIG_MALI_PLATFORM_PIKE2
+/* Spreadtrum tunables, see the module parameters in mali_kbase_core_linux.c */
+extern int gpu_pollingtime;
+extern int gpu_upthreshold;
+extern int gpu_downdifferential;
+static struct devfreq_simple_ondemand_data kbase_ondemand_data;
+#endif
+
 int kbase_devfreq_init(struct kbase_device *kbdev)
 {
 	struct devfreq_dev_profile *dp;
+	void *gov_data = NULL;
 	int err;
 
+#ifdef CONFIG_MALI_PLATFORM_PIKE2
+	/* GPU clocks belong to the platform code; there is no kbdev->clock */
+	kbdev->current_freq = kbase_platform_get_init_freq();
+	kbase_ondemand_data.upthreshold = gpu_upthreshold;
+	kbase_ondemand_data.downdifferential = gpu_downdifferential;
+	gov_data = &kbase_ondemand_data;
+#else
 	if (!kbdev->clock) {
 		dev_err(kbdev->dev, "Clock not available for devfreq\n");
 		return -ENODEV;
 	}
 
 	kbdev->current_freq = clk_get_rate(kbdev->clock);
+#endif
 	kbdev->current_nominal_freq = kbdev->current_freq;
 
 	dp = &kbdev->devfreq_profile;
 
 	dp->initial_freq = kbdev->current_freq;
+#ifdef CONFIG_MALI_PLATFORM_PIKE2
+	dp->polling_ms = gpu_pollingtime;
+#else
 	dp->polling_ms = 100;
+#endif
 	dp->target = kbase_devfreq_target;
 	dp->get_dev_status = kbase_devfreq_status;
 	dp->get_cur_freq = kbase_devfreq_cur_freq;
@@ -336,7 +367,7 @@ int kbase_devfreq_init(struct kbase_device *kbdev)
 		return err;
 
 	kbdev->devfreq = devfreq_add_device(kbdev->dev, dp,
-				"simple_ondemand", NULL);
+				"simple_ondemand", gov_data);
 	if (IS_ERR(kbdev->devfreq)) {
 		kbase_devfreq_term_freq_table(kbdev);
 		return PTR_ERR(kbdev->devfreq);

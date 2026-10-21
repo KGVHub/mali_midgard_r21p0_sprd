@@ -36,6 +36,7 @@ MALI_COVERAGE ?= 0
 # Spreadtrum SC7731E; the stock module is called mali.ko
 CONFIG_MALI_MIDGARD ?= m
 CONFIG_MALI_PLATFORM_NAME ?= "pike2"
+CONFIG_MALI_DEVFREQ ?= y
 # This workaround is for what seems to be a compiler bug we observed in
 # GCC 4.7 on AOSP 4.3.  The bug caused an intermittent failure compiling
 # the "_Pragma" syntax, where an error message is returned:
@@ -128,6 +129,14 @@ endif
 
 
 ccflags-y += -I$(KBASE_PATH)
+
+# Out-of-tree build: pass the driver options the kernel .config does not have
+ifeq ($(CONFIG_MALI_DEVFREQ),y)
+ccflags-y += -DCONFIG_MALI_DEVFREQ
+endif
+ifeq ($(shell echo $(CONFIG_MALI_PLATFORM_NAME)),pike2)
+ccflags-y += -DCONFIG_MALI_PLATFORM_PIKE2
+endif
 
 # Tell the Linux build system from which .o file to create the kernel module
 obj-$(CONFIG_MALI_MIDGARD) += mali.o
