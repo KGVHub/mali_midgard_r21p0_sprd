@@ -387,6 +387,10 @@ static int kbase_open(struct inode *inode, struct file *filp)
 	char kctx_name[64];
 #endif
 
+	/* Memory handles are passed as mmap offsets above 4 GB; 4.4.y's
+	 * mmap limits (be83bbf80682) reject that unless we opt out. */
+	filp->f_mode |= FMODE_UNSIGNED_OFFSET;
+
 	kbdev = kbase_find_device(iminor(inode));
 
 	if (!kbdev)
